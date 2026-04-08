@@ -5,7 +5,8 @@ clientId=1489614423684550716
 # launcherPath=C:/Users/emin/IdeaProjects/FleetRichPresence/discord-bridge/build/install/discord-bridge/bin/discord-bridge.bat
 
 # Optional overrides passed through to the bridge process.
-# pollIntervalSeconds=3
+# pollIntervalMillis=500
+# pollIntervalSeconds=1
 # largeImageKey=coding
 # largeImageText=Coding in JetBrains Fleet
 # smallImageKey=fleet

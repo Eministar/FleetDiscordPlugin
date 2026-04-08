@@ -117,6 +117,7 @@ internal object BridgeAutoLauncher {
         }
 
         command += listOf("--client-id", clientId)
+        appendOption(command, properties, "pollIntervalMillis", "--poll-interval-millis")
         appendOption(command, properties, "pollIntervalSeconds", "--poll-interval-seconds")
         appendOption(command, properties, "largeImageKey", "--large-image-key")
         appendOption(command, properties, "largeImageText", "--large-image-text")

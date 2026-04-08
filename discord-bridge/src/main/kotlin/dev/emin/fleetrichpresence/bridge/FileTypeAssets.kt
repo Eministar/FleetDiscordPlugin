@@ -67,4 +67,6 @@ object FileTypeAssets {
 
         return extensionMap[extension]
     }
+
+    fun languageName(fileName: String?): String? = resolve(fileName)?.text
 }

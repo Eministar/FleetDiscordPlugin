@@ -9,6 +9,7 @@ data class WindowContext(
     val rawTitle: String,
     val fileName: String?,
     val projectName: String?,
+    val language: String?,
     val capturedAtEpochSecond: Long,
 ) {
     fun isFresh(now: Instant, ttl: Duration): Boolean =
@@ -38,6 +39,7 @@ data class WindowContext(
                 rawTitle = sanitizedTitle,
                 fileName = fileName,
                 projectName = projectName,
+                language = FileTypeAssets.languageName(fileName),
                 capturedAtEpochSecond = Instant.now().epochSecond,
             )
         }
@@ -48,6 +50,8 @@ data class WindowContext(
                 .removePrefix("● ")
                 .removePrefix("• ")
                 .removePrefix("* ")
+                .removeSuffix(" *")
+                .removeSuffix("*")
                 .trim()
 
         private fun isFleetLabel(token: String): Boolean =
@@ -55,6 +59,10 @@ data class WindowContext(
                 token.equals("jetbrains fleet", ignoreCase = true)
 
         private fun looksLikeFileToken(token: String): Boolean {
+            if (token.equals("dockerfile", ignoreCase = true) || token.startsWith('.')) {
+                return true
+            }
+
             if (token.contains('\\') || token.contains('/')) {
                 return true
             }

@@ -35,15 +35,27 @@ data class BridgeConfig(
             val sessionsDirectory = options["--sessions-dir"]?.let(Path::of)
                 ?: Path.of(System.getProperty("user.home"), ".fleet-rich-presence", "sessions")
 
-            val pollIntervalSeconds = options["--poll-interval-seconds"]?.toLongOrNull() ?: 1L
-            require(pollIntervalSeconds > 0) { "--poll-interval-seconds must be greater than zero." }
+            val pollInterval = when {
+                options["--poll-interval-millis"] != null -> {
+                    val millis = options["--poll-interval-millis"]?.toLongOrNull()
+                        ?: throw IllegalArgumentException("--poll-interval-millis must be a whole number.")
+                    require(millis > 0) { "--poll-interval-millis must be greater than zero." }
+                    Duration.ofMillis(millis)
+                }
+
+                else -> {
+                    val seconds = options["--poll-interval-seconds"]?.toLongOrNull() ?: 1L
+                    require(seconds > 0) { "--poll-interval-seconds must be greater than zero." }
+                    Duration.ofSeconds(seconds)
+                }
+            }
 
             val debug = options["--debug"]?.toBooleanStrictOrNull() ?: false
 
             return BridgeConfig(
                 clientId = clientId,
                 sessionsDirectory = sessionsDirectory,
-                pollInterval = Duration.ofSeconds(pollIntervalSeconds),
+                pollInterval = pollInterval,
                 defaultLargeImageKey = options["--large-image-key"]?.takeIf(String::isNotBlank) ?: "coding",
                 defaultLargeImageText = options["--large-image-text"]?.takeIf(String::isNotBlank) ?: "Coding in JetBrains Fleet",
                 smallImageKey = options["--small-image-key"]?.takeIf(String::isNotBlank) ?: "fleet",
@@ -54,7 +66,7 @@ data class BridgeConfig(
 
         fun usage(): String = """
             Usage:
-              discord-bridge --client-id <discord_app_id> [--sessions-dir <path>] [--poll-interval-seconds <n>] [--large-image-key <key>] [--large-image-text <text>] [--small-image-key <key>] [--small-image-text <text>] [--debug true|false]
+              discord-bridge --client-id <discord_app_id> [--sessions-dir <path>] [--poll-interval-millis <n> | --poll-interval-seconds <n>] [--large-image-key <key>] [--large-image-text <text>] [--small-image-key <key>] [--small-image-text <text>] [--debug true|false]
 
             Environment fallback:
               DISCORD_CLIENT_ID=<discord_app_id>

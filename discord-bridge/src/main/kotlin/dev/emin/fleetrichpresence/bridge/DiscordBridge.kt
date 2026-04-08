@@ -1,5 +1,7 @@
 package dev.emin.fleetrichpresence.bridge
 
+import com.google.gson.JsonNull
+import com.google.gson.JsonObject
 import com.jagrosh.discordipc.IPCClient
 import com.jagrosh.discordipc.IPCListener
 import com.jagrosh.discordipc.entities.ActivityType
@@ -17,20 +19,26 @@ import java.util.stream.Collectors
 class DiscordBridge(private val config: BridgeConfig) {
     private val logger = System.getLogger(DiscordBridge::class.java.name)
     private val staleAfter = Duration.ofSeconds(45)
+    private val retainedWindowContextTtl = Duration.ofSeconds(2)
     private val running = AtomicBoolean(true)
     private val windowContextProvider = WindowContextProvider.forCurrentPlatform()
 
     private var client: IPCClient? = null
     private var lastFingerprint: String? = null
     private var discordUnavailableLogged = false
-    private var lastWindowContext: WindowContext? = null
+    private val lastWindowContexts = mutableMapOf<String, WindowContext>()
+
+    private data class ActiveSessionSnapshot(
+        val session: SessionStatus,
+        val windowContext: WindowContext?,
+    )
 
     fun run() {
         Runtime.getRuntime().addShutdownHook(
             Thread(
                 {
                     running.set(false)
-                    disconnect()
+                    disconnect(clearActivity = true)
                 },
                 "discord-bridge-shutdown",
             ),
@@ -40,11 +48,11 @@ class DiscordBridge(private val config: BridgeConfig) {
 
         while (running.get()) {
             try {
-                val activeSession = loadActiveSession()
-                if (activeSession == null) {
+                val activeSnapshot = loadActiveSnapshot()
+                if (activeSnapshot == null) {
                     clearPresenceIfNeeded()
                 } else {
-                    publish(activeSession)
+                    publish(activeSnapshot)
                 }
             } catch (error: Exception) {
                 logger.log(System.Logger.Level.WARNING, "Bridge loop failed; retrying on next poll.", error)
@@ -55,22 +63,27 @@ class DiscordBridge(private val config: BridgeConfig) {
         }
     }
 
-    private fun publish(session: SessionStatus) {
+    private fun publish(snapshot: ActiveSessionSnapshot) {
         ensureConnected()
         val currentClient = client ?: return
-        val windowContext = currentWindowContext(session)
+        val session = snapshot.session
+        val windowContext = snapshot.windowContext
         val fileName = windowContext?.fileName ?: session.fileName
         val projectName = windowContext?.projectName ?: session.projectName
-        val details = session.details.ifBlank { "Coding in JetBrains Fleet" }
-        val state = buildState(projectName, fileName, session.language)
+        val language = windowContext?.language ?: session.language ?: FileTypeAssets.languageName(fileName)
+        val details = buildDetails(session.details, projectName, fileName, language)
+        val state = buildState(projectName, language)
         val largeImageAsset = FileTypeAssets.resolve(fileName)
             ?: config.defaultLargeImageKey?.let { key ->
                 LargeImageAsset(key = key, text = config.defaultLargeImageText ?: "Coding in JetBrains Fleet")
             }
         val fingerprint = listOf(
-            session.fingerprint(),
+            session.sessionId,
             details,
             state.orEmpty(),
+            fileName.orEmpty(),
+            projectName.orEmpty(),
+            language.orEmpty(),
             windowContext?.rawTitle.orEmpty(),
             largeImageAsset?.key.orEmpty(),
         ).joinToString("|")
@@ -97,17 +110,26 @@ class DiscordBridge(private val config: BridgeConfig) {
         logger.log(System.Logger.Level.INFO, "Updated Discord Rich Presence from ${session.sourcePath.fileName}.")
     }
 
-    private fun buildState(projectName: String?, fileName: String?, language: String?): String {
+    private fun buildDetails(defaultDetails: String, projectName: String?, fileName: String?, language: String?): String {
+        val rawDetails = when {
+            !fileName.isNullOrBlank() -> "Editing $fileName"
+            !projectName.isNullOrBlank() -> "Browsing $projectName"
+            !language.isNullOrBlank() -> "Working in $language"
+            else -> defaultDetails.ifBlank { "Coding in JetBrains Fleet" }
+        }
+        return truncateDiscordField(rawDetails)
+    }
+
+    private fun buildState(projectName: String?, language: String?): String? {
         val parts = buildList {
             projectName?.takeIf(String::isNotBlank)?.let { add(it) }
-            fileName?.takeIf(String::isNotBlank)?.let { add(it) }
+            language?.takeIf(String::isNotBlank)?.let { add(it) }
         }
-        val rawState = when {
-            parts.isNotEmpty() -> parts.joinToString(" | ")
-            !language.isNullOrBlank() -> language
-            else -> "Fleet session"
+        return if (parts.isEmpty()) {
+            null
+        } else {
+            truncateDiscordField(parts.joinToString(" | "))
         }
-        return truncateDiscordField(rawState)
     }
 
     private fun truncateDiscordField(value: String, maxLength: Int = 128): String =
@@ -144,46 +166,143 @@ class DiscordBridge(private val config: BridgeConfig) {
         }
 
         logger.log(System.Logger.Level.INFO, "No active Fleet session found; closing Discord IPC connection.")
-        disconnect()
+        disconnect(clearActivity = true)
     }
 
-    private fun disconnect() {
-        runCatching { client?.close() }
+    private fun disconnect(clearActivity: Boolean = false) {
+        val currentClient = client
+        if (currentClient != null && clearActivity) {
+            clearDiscordActivity(currentClient)
+        }
+
+        runCatching { currentClient?.close() }
             .onFailure { error ->
                 logger.log(System.Logger.Level.DEBUG, "Ignoring Discord IPC close failure.", error)
             }
         client = null
         lastFingerprint = null
+        if (clearActivity) {
+            lastWindowContexts.clear()
+        }
     }
 
-    private fun currentWindowContext(session: SessionStatus): WindowContext? {
+    private fun clearDiscordActivity(currentClient: IPCClient) {
+        runCatching {
+            val pipeField = IPCClient::class.java.getDeclaredField("pipe").apply { isAccessible = true }
+            val pipe = pipeField.get(currentClient) ?: return
+            val args = JsonObject().apply {
+                addProperty("pid", ProcessHandle.current().pid())
+                add("activity", JsonNull.INSTANCE)
+            }
+            val payload = JsonObject().apply {
+                addProperty("cmd", "SET_ACTIVITY")
+                add("args", args)
+            }
+            pipe.javaClass
+                .getMethod("send", Packet.OpCode::class.java, JsonObject::class.java)
+                .invoke(pipe, Packet.OpCode.FRAME, payload)
+        }.onFailure { error ->
+            logger.log(System.Logger.Level.DEBUG, "Failed to clear Discord activity explicitly.", error)
+        }
+    }
+
+    private fun currentWindowContext(session: SessionStatus, hintedWindowContext: WindowContext? = null): WindowContext? {
+        hintedWindowContext
+            ?.takeIf { canUseWindowContext(session, it) }
+            ?.also {
+                lastWindowContexts[session.sessionId] = it
+                return it
+            }
+
         val captured = windowContextProvider.capture(session.pid, logger)
         if (captured != null) {
-            lastWindowContext = captured
+            lastWindowContexts[session.sessionId] = captured
             return captured
         }
 
-        val retained = lastWindowContext
-        return if (retained != null && retained.pid == session.pid) retained else null
+        val compatibleVisibleWindow = windowContextProvider.capture(0L, logger)
+        if (compatibleVisibleWindow != null && canUseWindowContext(session, compatibleVisibleWindow)) {
+            lastWindowContexts[session.sessionId] = compatibleVisibleWindow
+            return compatibleVisibleWindow
+        }
+
+        val retained = lastWindowContexts[session.sessionId]
+        return retained?.takeIf { canUseWindowContext(session, it) && it.isFresh(Instant.now(), retainedWindowContextTtl) }
     }
 
-    private fun loadActiveSession(): SessionStatus? {
-        if (!Files.isDirectory(config.sessionsDirectory)) {
+    private fun canUseWindowContext(session: SessionStatus, windowContext: WindowContext): Boolean {
+        if (session.pid <= 0L) {
+            return true
+        }
+
+        return session.pid == windowContext.pid || isAncestorOrDescendant(session.pid, windowContext.pid)
+    }
+
+    private fun isAncestorOrDescendant(firstPid: Long, secondPid: Long): Boolean {
+        if (firstPid <= 0L || secondPid <= 0L) {
+            return false
+        }
+
+        if (firstPid == secondPid) {
+            return true
+        }
+
+        return lineageContains(firstPid, secondPid) || lineageContains(secondPid, firstPid)
+    }
+
+    private fun lineageContains(originPid: Long, targetPid: Long): Boolean {
+        var current = ProcessHandle.of(originPid).orElse(null)
+        repeat(8) {
+            current = current?.parent()?.orElse(null)
+            val currentPid = current?.pid() ?: return false
+            if (currentPid == targetPid) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun loadActiveSnapshot(): ActiveSessionSnapshot? {
+        val sessions = loadActiveSessions()
+        if (sessions.isEmpty()) {
+            lastWindowContexts.clear()
             return null
+        }
+
+        val activeSessionIds = sessions.mapTo(mutableSetOf(), SessionStatus::sessionId)
+        lastWindowContexts.keys.retainAll(activeSessionIds)
+
+        val fallbackSession = sessions.maxWithOrNull(
+            compareBy<SessionStatus>({ it.lastHeartbeatEpochSecond }, { it.startedAtEpochSecond }),
+        ) ?: return null
+
+        val foregroundWindowContext = windowContextProvider.capture(0L, logger)
+        if (foregroundWindowContext != null) {
+            if (sessions.size == 1) {
+                return ActiveSessionSnapshot(fallbackSession, foregroundWindowContext)
+            }
+
+            sessions.firstOrNull { canUseWindowContext(it, foregroundWindowContext) }?.let { matchedSession ->
+                return ActiveSessionSnapshot(matchedSession, foregroundWindowContext)
+            }
+        }
+
+        return ActiveSessionSnapshot(fallbackSession, currentWindowContext(fallbackSession))
+    }
+
+    private fun loadActiveSessions(): List<SessionStatus> {
+        if (!Files.isDirectory(config.sessionsDirectory)) {
+            return emptyList()
         }
 
         val now = Instant.now()
         Files.list(config.sessionsDirectory).use { paths ->
-            val sessions = paths
+            return paths
                 .filter(Files::isRegularFile)
                 .map(::loadSafely)
                 .filter { session -> session != null && session.isAlive(now, staleAfter) }
                 .map { it!! }
                 .collect(Collectors.toList())
-
-            return sessions.maxWithOrNull(
-                compareBy<SessionStatus>({ it.lastHeartbeatEpochSecond }, { it.startedAtEpochSecond }),
-            )
         }
     }
 

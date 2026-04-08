@@ -108,12 +108,14 @@ private object WindowsWindowContextProvider : WindowContextProvider {
             .flatMap { handle -> handle.info().command() }
             .orElse("")
 
-        if (command.isBlank()) {
-            return false
+        val executableName = if (command.isBlank()) {
+            ""
+        } else {
+            runCatching { Path.of(command).fileName.toString() }.getOrDefault(command)
         }
-
-        val executableName = Path.of(command).fileName.toString()
         return executableName.equals("fleet.exe", ignoreCase = true) ||
-            executableName.equals("fleet", ignoreCase = true)
+            executableName.equals("fleet", ignoreCase = true) ||
+            executableName.startsWith("fleet", ignoreCase = true) ||
+            title.contains("JetBrains Fleet", ignoreCase = true)
     }
 }
