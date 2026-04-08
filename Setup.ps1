@@ -161,12 +161,28 @@ function Invoke-NativeCommand {
     )
 
     Push-Location $WorkingDirectory
+    $stderrFile = $null
     try {
-        $output = & $FilePath @Arguments 2>&1
+        $stderrFile = New-TemporaryFile
+        $stdout = @(& $FilePath @Arguments 2> $stderrFile.FullName)
         $exitCode = $LASTEXITCODE
     } finally {
         Pop-Location
     }
+
+    try {
+        $stderr = if ($stderrFile -and (Test-Path -LiteralPath $stderrFile.FullName)) {
+            @(Get-Content -LiteralPath $stderrFile.FullName)
+        } else {
+            @()
+        }
+    } finally {
+        if ($stderrFile -and (Test-Path -LiteralPath $stderrFile.FullName)) {
+            Remove-Item -LiteralPath $stderrFile.FullName -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $output = @($stdout) + @($stderr)
 
     if (-not $IgnoreExitCode -and $exitCode -ne 0) {
         $joinedArgs = $Arguments -join " "
