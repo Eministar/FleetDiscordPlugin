@@ -1,0 +1,13 @@
+enabled=true
+clientId=1489614423684550716
+# Optional absolute path. If omitted, the plugin tries to derive the local bridge script
+# from fleet.custom.resolved-plugins-configuration.path.
+# launcherPath=C:/Users/emin/IdeaProjects/FleetRichPresence/discord-bridge/build/install/discord-bridge/bin/discord-bridge.bat
+
+# Optional overrides passed through to the bridge process.
+# pollIntervalSeconds=3
+# largeImageKey=coding
+# largeImageText=Coding in JetBrains Fleet
+# smallImageKey=fleet
+# smallImageText=JetBrains Fleet
+# debug=false

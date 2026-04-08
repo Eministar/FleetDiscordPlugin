@@ -1,0 +1,17 @@
+[versions]
+kotlin = "2.1.21"
+fleet-sdk = "0.7.337"
+fleet-runtime = "1.48.261"
+discord-ipc = "0.10.4"
+slf4j = "2.0.17"
+
+[libraries]
+discord-ipc = { group = "io.github.cdagaming", name = "DiscordIPC", version.ref = "discord-ipc" }
+slf4j-simple = { group = "org.slf4j", name = "slf4j-simple", version.ref = "slf4j" }
+
+[plugins]
+
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+fleet-plugin = { id = "org.jetbrains.fleet-plugin", version.ref = "fleet-sdk" }
+fleet-plugin-layer = { id = "org.jetbrains.fleet-plugin-layer", version.ref = "fleet-sdk" }
